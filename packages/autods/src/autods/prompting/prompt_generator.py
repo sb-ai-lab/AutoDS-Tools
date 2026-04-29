@@ -6,10 +6,33 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 
 from autods.constants import (
     ANALYST_REPORT_PATH,
+    PLANNER_REPORT_PATH,
     RESEARCHER_REPORT_PATH,
 )
 from autods.prompting.prompt_store import prompt_store
 from autods.tools.base import BaseTool
+
+
+def _saved_reports_context(
+    project_path: str,
+    *,
+    include_planner: bool = True,
+) -> str:
+    context = ""
+    report_paths = [
+        ("Analyst Report", ANALYST_REPORT_PATH),
+        ("Researcher Report", RESEARCHER_REPORT_PATH),
+    ]
+    if include_planner:
+        report_paths.insert(1, ("Planner Report", PLANNER_REPORT_PATH))
+    for label, relative_path in report_paths:
+        report_path = Path(project_path) / relative_path
+        if not report_path.exists() or not report_path.is_file():
+            continue
+        report = report_path.read_text(encoding="utf-8").strip()
+        if report:
+            context += f"[{label}]\n{report}\n\n"
+    return context
 
 
 class PromptGenerator(ABC):
@@ -89,6 +112,7 @@ class AutoDSPromptGenerator(PromptGenerator):
     def user_prompt(self) -> HumanMessage:
         return HumanMessage(
             content=(
+                f"{_saved_reports_context(self.project_path)}"
                 f"[Time]\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"[Project root path]\n{self.project_path}\n\n"
             )
@@ -163,6 +187,7 @@ class AnalystPromptGenerator(PromptGenerator):
     def user_prompt(self) -> HumanMessage:
         return HumanMessage(
             content=(
+                f"{_saved_reports_context(self.project_path)}"
                 f"[Time]\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"[Project root path]\n{self.project_path}\n\n"
                 f"[STEPS LIMIT]\n{self.steps_limit}\n\n"
@@ -207,6 +232,7 @@ class ResearcherPromptGenerator(PromptGenerator):
     def user_prompt(self) -> HumanMessage:
         return HumanMessage(
             content=(
+                f"{_saved_reports_context(self.project_path)}"
                 f"[Time]\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"[Project root path]\n{self.project_path}\n\n"
                 f"[STEPS LIMIT]\n{self.steps_limit}\n\n"
@@ -227,6 +253,7 @@ class PlannerOneShotPromptGenerator(PromptGenerator):
     def user_prompt(self) -> HumanMessage:
         return HumanMessage(
             content=(
+                f"{_saved_reports_context(self.project_path)}"
                 f"[Time]\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"[Project root path]\n{self.project_path}\n\n"
             )
@@ -251,30 +278,9 @@ class DebuggerPromptGenerator(PromptGenerator):
 
     @property
     def user_prompt(self) -> HumanMessage:
-        analyst_report_path = Path(self.project_path) / ANALYST_REPORT_PATH
-        researcher_report_path = Path(self.project_path) / RESEARCHER_REPORT_PATH
-
-        context = ""
-        if (
-            analyst_report_path.exists()
-            and analyst_report_path.is_file()
-            and analyst_report_path.stat().st_size > 0
-            and analyst_report_path.read_text(encoding="utf-8").strip() != ""
-        ):
-            analyst_report = analyst_report_path.read_text(encoding="utf-8")
-            context += f"[Analyst Report]\n{analyst_report}\n\n"
-        if (
-            researcher_report_path.exists()
-            and researcher_report_path.is_file()
-            and researcher_report_path.stat().st_size > 0
-            and researcher_report_path.read_text(encoding="utf-8").strip() != ""
-        ):
-            researcher_report = researcher_report_path.read_text(encoding="utf-8")
-            context += f"[Researcher Report]\n{researcher_report}\n\n"
-
         return HumanMessage(
             content=(
-                f"{context}\n\n"
+                f"{_saved_reports_context(self.project_path, include_planner=False)}"
                 f"[Time]\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"[Project root path]\n{self.project_path}\n\n"
                 f"[STEPS LIMIT]\n{self.steps_limit}\n\n"
@@ -317,30 +323,9 @@ class PresenterPromptGenerator(PromptGenerator):
 
     @property
     def user_prompt(self) -> HumanMessage:
-        analyst_report_path = Path(self.project_path) / ANALYST_REPORT_PATH
-        researcher_report_path = Path(self.project_path) / RESEARCHER_REPORT_PATH
-
-        context = ""
-        if (
-            analyst_report_path.exists()
-            and analyst_report_path.is_file()
-            and analyst_report_path.stat().st_size > 0
-            and analyst_report_path.read_text(encoding="utf-8").strip() != ""
-        ):
-            analyst_report = analyst_report_path.read_text(encoding="utf-8")
-            context += f"[Analyst Report]\n{analyst_report}\n\n"
-        if (
-            researcher_report_path.exists()
-            and researcher_report_path.is_file()
-            and researcher_report_path.stat().st_size > 0
-            and researcher_report_path.read_text(encoding="utf-8").strip() != ""
-        ):
-            researcher_report = researcher_report_path.read_text(encoding="utf-8")
-            context += f"[Researcher Report]\n{researcher_report}\n\n"
-
         return HumanMessage(
             content=(
-                f"{context}\n\n"
+                f"{_saved_reports_context(self.project_path, include_planner=False)}"
                 f"[Time]\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 f"[Project root path]\n{self.project_path}\n\n"
                 f"[STEPS LIMIT]\n{self.steps_limit}\n\n"
