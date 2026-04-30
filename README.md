@@ -72,41 +72,26 @@ npm install
 
 ## Configuration
 
-The application reads config from `~/.autods/autods_config.yaml`.
+AutoDS reads its model runtime configuration from environment variables.
 
-Start from the example:
+Minimal `.env` example:
 
-```bash
-mkdir -p ~/.autods
-cp autods_config.yaml.example ~/.autods/autods_config.yaml
+```env
+AUTODS_MODEL=gpt-5
+AUTODS_API_KEY=sk-your-key
+AUTODS_BASE_URL=https://api.openai.com/v1
 ```
 
-Minimal example:
+Optional advanced request settings:
 
-```yaml
-model_providers:
-  openai:
-    provider: openai
-    api_key: ${OPENAI_API_KEY}
-
-models:
-  gpt_5:
-    model_provider: openai
-    model: gpt-5
-    max_retries: 3
-
-agents:
-  autods:
-    model: gpt_5
-    max_steps: 50
-    analyst_steps: 5
-    researcher_steps: 5
-    planner_steps: 5
-    debugger_steps: 5
-    presenter_steps: 5
+```env
+AUTODS_MAX_RETRIES=3
+AUTODS_MODEL_KWARGS_JSON={"temperature":0.2}
+AUTODS_EXTRA_BODY_JSON={"reasoning":{"effort":"medium"}}
+AUTODS_DEFAULT_HEADERS_JSON={"X-Title":"AutoDS"}
 ```
 
-See [autods_config.yaml.example](autods_config.yaml.example) for the fuller template.
+The runtime supports OpenAI-compatible request/response schema only. To switch backends, point `AUTODS_BASE_URL` at a compatible gateway such as OpenAI, OpenRouter, LiteLLM, vLLM, or an OpenAI-compatible Ollama endpoint.
 
 ## Running The System
 
@@ -128,7 +113,17 @@ just frontend-dev
 
 The UI runs on `http://localhost:3000`.
 
-The frontend uses `NEXT_PUBLIC_API_URL` and defaults to `http://localhost:8000`. Override it in `apps/frontend/.env.local` if needed.
+The frontend uses `NEXT_PUBLIC_API_URL` when it is set.
+
+Without that variable:
+- local browser development on `localhost` / `127.0.0.1` falls back to `http://<host>:8000`
+- non-local browser hosts fall back to the current origin for same-origin proxy deployments
+
+Set `apps/frontend/.env.local` if you want an explicit local override, for example:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
 
 ### CLI
 
@@ -150,6 +145,12 @@ CLI behavior:
 Examples:
 
 ```bash
+# Run locally with environment-based model config
+AUTODS_MODEL=gpt-5 \
+AUTODS_API_KEY=sk-your-key \
+AUTODS_BASE_URL=https://api.openai.com/v1 \
+uv run autods exec "Train a baseline model"
+
 # Start an explicit local server
 uv run autods server
 
