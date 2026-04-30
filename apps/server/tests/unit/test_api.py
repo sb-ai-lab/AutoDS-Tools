@@ -413,6 +413,89 @@ def test_run_request_passes_options_to_runtime(session_root: Path) -> None:
     ]
 
 
+def test_install_libraries_uses_uv_and_returns_success(
+    session_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _create_client(session_root)
+    _bootstrap(client)
+    session_id = client.post("/api/sessions").json()["id"]
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        check: bool = False,
+        capture_output: bool = False,
+        text: bool = False,
+        timeout: int | None = None,
+    ) -> Any:
+        del check, capture_output, text, timeout
+        commands.append(command)
+        if command[:2] == ["uv", "venv"]:
+            venv_path = Path(command[-1])
+            (venv_path / "bin").mkdir(parents=True, exist_ok=True)
+            (venv_path / "bin" / "python").touch()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["uv", "pip", "install"]:
+            return SimpleNamespace(returncode=0, stdout="installed with uv", stderr="")
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(api_module.subprocess, "run", fake_run)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/install",
+        json={"libraries": ["lightautoml[all]"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+    assert response.json()["installed"] == ["lightautoml[all]"]
+    assert response.json()["output"] == "installed with uv"
+    assert len(commands) == 2
+    assert commands[0][:2] == ["uv", "venv"]
+    assert commands[0][2] == "--allow-existing"
+    assert commands[1][:4] == ["uv", "pip", "install", "--python"]
+    assert commands[1][-1] == "lightautoml[all]"
+
+
+def test_install_libraries_returns_uv_stderr_on_failure(
+    session_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _create_client(session_root)
+    _bootstrap(client)
+    session_id = client.post("/api/sessions").json()["id"]
+
+    def fake_run(
+        command: list[str],
+        *,
+        check: bool = False,
+        capture_output: bool = False,
+        text: bool = False,
+        timeout: int | None = None,
+    ) -> Any:
+        del check, capture_output, text, timeout
+        if command[:2] == ["uv", "venv"]:
+            venv_path = Path(command[-1])
+            (venv_path / "bin").mkdir(parents=True, exist_ok=True)
+            (venv_path / "bin" / "python").touch()
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["uv", "pip", "install"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="compiler missing")
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(api_module.subprocess, "run", fake_run)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/install",
+        json={"libraries": ["lightautoml[all]"]},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "uv pip install failed: compiler missing"}
+
+
 def test_transcript_persists_across_app_restart(session_root: Path) -> None:
     first_client, _ = _create_client(session_root)
     principal_id = _bootstrap(first_client)

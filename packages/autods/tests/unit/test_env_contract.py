@@ -49,6 +49,29 @@ def test_llm_client_reads_openai_compatible_settings_from_env(
     }
 
 
+def test_llm_client_normalizes_chat_completions_base_url_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("AUTODS_BASE_URL", "https://gateway.example.com/v4/chat/completions/")
+    captured = _install_fake_chat_openai(monkeypatch)
+
+    LLMClient()
+
+    assert captured["base_url"] == "https://gateway.example.com/v4"
+
+
+def test_llm_client_normalizes_chat_completions_base_url_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_env(monkeypatch)
+    captured = _install_fake_chat_openai(monkeypatch)
+
+    LLMClient(base_url="https://gateway.example.com/chat/completions")
+
+    assert captured["base_url"] == "https://gateway.example.com"
+
+
 @pytest.mark.parametrize(
     "missing_var",
     [

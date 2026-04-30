@@ -70,6 +70,13 @@ COOKIE_PRINCIPAL_NAME = "autods_pid"
 HEADER_PRINCIPAL_NAME = "X-AutoDS-Principal"
 ARTIFACT_TREE_MAX_DEPTH = int(os.environ.get("ARTIFACT_TREE_MAX_DEPTH", "5"))
 ARTIFACT_TREE_MAX_ITEMS = int(os.environ.get("ARTIFACT_TREE_MAX_ITEMS", "10000"))
+# Large dependency sets (e.g. lightautoml[all]) commonly exceed 5 minutes to resolve and install.
+_PIP_INSTALL_TIMEOUT_DEFAULT_SEC = 3600
+_PIP_INSTALL_TIMEOUT_SEC = max(
+    1,
+    int(os.environ.get("AUTODS_PIP_INSTALL_TIMEOUT_SEC", str(_PIP_INSTALL_TIMEOUT_DEFAULT_SEC))),
+)
+_PIP_INSTALL_STDERR_TAIL = int(os.environ.get("AUTODS_PIP_INSTALL_STDERR_TAIL", "12000"))
 ALLOWED_UPLOAD_EXTENSIONS = {
     ".csv",
     ".tsv",
@@ -85,6 +92,21 @@ ALLOWED_UPLOAD_EXTENSIONS = {
     ".py",
     ".ipynb",
 }
+_UV_BIN = os.environ.get("AUTODS_UV_BIN", "uv")
+
+
+def _venv_python_path(venv_path: Path) -> Path:
+    if os.name == "nt":
+        return venv_path / "Scripts" / "python.exe"
+    return venv_path / "bin" / "python"
+
+
+def _uv_venv_create_command(venv_path: Path) -> list[str]:
+    return [_UV_BIN, "venv", "--allow-existing", str(venv_path)]
+
+
+def _uv_pip_install_command(venv_path: Path, libraries: list[str]) -> list[str]:
+    return [_UV_BIN, "pip", "install", "--python", str(_venv_python_path(venv_path)), *libraries]
 
 
 def build_llm_client(options: dict[str, Any]) -> LLMClient:
@@ -751,6 +773,7 @@ def create_app(
             value=principal_id,
             httponly=True,
             samesite="lax",
+            secure=auth_settings.auth_cookie_secure,
             max_age=60 * 60 * 24 * 365,
         )
         return BootstrapResponse(principal_id=principal_id)
@@ -987,37 +1010,43 @@ def create_app(
             return {"status": "no_libraries", "message": "No libraries specified"}
 
         venv_path = workspace / ".venv"
-        pip_path = venv_path / "bin" / "pip"
+        venv_python = _venv_python_path(venv_path)
 
         def _run_venv_create() -> None:
             subprocess.run(
-                ["python3", "-m", "venv", str(venv_path)],
+                _uv_venv_create_command(venv_path),
                 check=True,
                 capture_output=True,
             )
 
-        def _run_pip_install() -> subprocess.CompletedProcess[str]:
+        def _run_uv_install() -> subprocess.CompletedProcess[str]:
             return subprocess.run(
-                [str(pip_path), "install", *body.libraries],
+                _uv_pip_install_command(venv_path, body.libraries),
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=_PIP_INSTALL_TIMEOUT_SEC,
             )
 
         try:
-            if not venv_path.exists():
+            if not venv_python.exists():
                 await run_in_threadpool(_run_venv_create)
-            result = await run_in_threadpool(_run_pip_install)
+            result = await run_in_threadpool(_run_uv_install)
         except subprocess.TimeoutExpired as exc:
-            raise HTTPException(status_code=500, detail="Installation timed out after 5 minutes") from exc
+            raise HTTPException(
+                status_code=504,
+                detail=f"Installation timed out after {_PIP_INSTALL_TIMEOUT_SEC} seconds",
+            ) from exc
         except Exception as exc:
             logger.exception("Failed to install libraries")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         if result.returncode != 0:
+            err = result.stderr or ""
+            if len(err) > _PIP_INSTALL_STDERR_TAIL:
+                err = "…" + err[-_PIP_INSTALL_STDERR_TAIL:]
             raise HTTPException(
                 status_code=500,
-                detail=f"pip install failed: {result.stderr}",
+                detail=f"uv pip install failed: {err}",
             )
 
         service.update_folder_size(session.id, get_folder_size(workspace))

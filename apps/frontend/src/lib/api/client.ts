@@ -1,3 +1,5 @@
+import { getBrowserQueryClient } from '@/lib/query-client-bridge'
+
 import { getApiBaseUrl } from './base-url'
 
 export interface Session {
@@ -94,7 +96,7 @@ async function ensureBrowserBootstrap() {
   return bootstrapPromise
 }
 
-async function fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
+async function fetchJson<T>(input: string, init?: RequestInit, isUnauthorizedRetry = false): Promise<T> {
   await ensureBrowserBootstrap()
 
   const response = await fetch(`${getApiBaseUrl()}${input}`, {
@@ -105,6 +107,12 @@ async function fetchJson<T>(input: string, init?: RequestInit): Promise<T> {
       ...(init?.headers || {}),
     },
   })
+
+  if (response.status === 401 && !isUnauthorizedRetry) {
+    bootstrapPromise = null
+    getBrowserQueryClient()?.invalidateQueries({ queryKey: ['auth-state'] })
+    return fetchJson<T>(input, init, true)
+  }
 
   if (!response.ok) {
     const message = await response.text()
