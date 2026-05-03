@@ -103,7 +103,7 @@ def _venv_python_path(venv_path: Path) -> Path:
 
 
 def _uv_venv_create_command(venv_path: Path) -> list[str]:
-    return [_UV_BIN, "venv", "--allow-existing", str(venv_path)]
+    return [_UV_BIN, "venv", "--seed", "--allow-existing", str(venv_path)]
 
 
 def _uv_pip_install_command(venv_path: Path, libraries: list[str]) -> list[str]:
@@ -549,10 +549,18 @@ class HostedAgentRuntime(SessionRuntime):
                     logger.exception("Run failed for session %s", session.id)
                     _finalize_assistant()
                     _set_session_status(SessionStatus.ERROR)
+                    error_message = f"Error: {exc}"
+                    service.append_transcript_message(
+                        session.id,
+                        TranscriptMessage(
+                            role="environment",
+                            content=error_message,
+                        ),
+                    )
                     _broadcast(
                         {
                             "type": "status",
-                            "data": f"Error: {exc}",
+                            "data": error_message,
                             "timestamp": datetime.now(UTC).isoformat(),
                         }
                     )
@@ -575,10 +583,21 @@ class HostedAgentRuntime(SessionRuntime):
         except Exception as exc:
             logger.exception("Failed to initialize run for session %s", session.id)
             _set_session_status(SessionStatus.ERROR)
+            error_message = f"Error: {exc}"
+            try:
+                service.append_transcript_message(
+                    session.id,
+                    TranscriptMessage(
+                        role="environment",
+                        content=error_message,
+                    ),
+                )
+            except SessionNotFoundError:
+                logger.debug("Skipping error transcript append for deleted session %s", session.id)
             _broadcast(
                 {
                     "type": "status",
-                    "data": f"Error: {exc}",
+                    "data": error_message,
                     "timestamp": datetime.now(UTC).isoformat(),
                 }
             )
