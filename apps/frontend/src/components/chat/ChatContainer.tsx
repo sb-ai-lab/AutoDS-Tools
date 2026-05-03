@@ -9,6 +9,7 @@ import {
   useMessages,
   useIsStreaming,
   useCurrentSessionId,
+  useSessionStore,
 } from '@/stores/useSessionStore'
 import { useAgentWebSocket } from '@/hooks/useAgentWebSocket'
 import { ChevronDown } from 'lucide-react'
@@ -18,6 +19,7 @@ export function ChatContainer() {
   const currentSessionId = useCurrentSessionId()
   const messages = useMessages()
   const isStreaming = useIsStreaming()
+  const sessionError = useSessionStore(state => state.error)
 
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -52,6 +54,11 @@ export function ChatContainer() {
     <div className="flex h-full flex-col">
       {/* Messages */}
       <div className="relative flex-1 overflow-hidden">
+        {sessionError && (
+          <div className="absolute left-1/2 top-4 z-10 w-[min(48rem,calc(100%-2rem))] -translate-x-1/2 rounded-lg border border-status-error/30 bg-status-error/10 px-3 py-2 text-sm text-status-error shadow-lg backdrop-blur-sm">
+            {sessionError}
+          </div>
+        )}
         {renderItems.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <p className="text-sm text-text-muted">

@@ -1,5 +1,6 @@
 import type { Message } from '../../stores/useSessionStore'
 import { parseAssistantContent, type ParsedAssistantContent } from './assistant-segments'
+import { looksLikeErrorOutput } from './terminal-output'
 
 export interface ChatRenderItem {
   message: Message
@@ -32,7 +33,7 @@ export function buildChatRenderItems(messages: Message[]): ChatRenderItem[] {
       continue
     }
 
-    if (message.role === 'environment') {
+    if (message.role === 'environment' && !looksLikeErrorOutput(message.content)) {
       continue
     }
 

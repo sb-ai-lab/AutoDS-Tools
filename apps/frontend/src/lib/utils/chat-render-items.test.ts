@@ -94,3 +94,18 @@ test('drops orphan environment messages completely', () => {
 
   assert.deepEqual(items, [])
 })
+
+test('keeps standalone environment messages that look like errors', () => {
+  const messages: Message[] = [
+    createMessage({
+      id: 'e1',
+      role: 'environment',
+      content: 'Error: Failed to install ipykernel',
+    }),
+  ]
+
+  const items = buildChatRenderItems(messages)
+
+  assert.equal(items.length, 1)
+  assert.equal(items[0].message.id, 'e1')
+})

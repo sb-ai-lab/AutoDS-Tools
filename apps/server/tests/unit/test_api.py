@@ -847,6 +847,11 @@ def test_hosted_runtime_init_failure_marks_session_error_and_cleans_registry(
     session_response = client.get(f"/api/sessions/{session_id}")
     assert session_response.status_code == 200
     assert session_response.json()["status"] == "error"
+    transcript_response = client.get(f"/api/sessions/{session_id}/transcript")
+    assert transcript_response.status_code == 200
+    error_message = transcript_response.json()["messages"][-1]
+    assert error_message["role"] == "environment"
+    assert error_message["content"] == "Error: invalid config"
 
     with runtime._lock:
         assert session_id not in runtime._threads

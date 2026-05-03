@@ -10,6 +10,14 @@ def _required_env(name: str, override: str | None = None) -> str:
     return value
 
 
+def _normalize_base_url(value: str) -> str:
+    suffix = "/chat/completions"
+    stripped = value.rstrip("/")
+    if stripped.endswith(suffix):
+        return stripped[: -len(suffix)]
+    return value
+
+
 def _optional_int_env(name: str, default: int, override: int | None = None) -> int:
     if override is not None:
         return override
@@ -57,7 +65,7 @@ class LLMClient:
         self._client = ChatOpenAI(
             model=_required_env("AUTODS_MODEL", model),
             api_key=cast(Any, _required_env("AUTODS_API_KEY", api_key)),
-            base_url=_required_env("AUTODS_BASE_URL", base_url),
+            base_url=_normalize_base_url(_required_env("AUTODS_BASE_URL", base_url)),
             max_retries=_optional_int_env("AUTODS_MAX_RETRIES", 3, max_retries),
             model_kwargs=_optional_json_dict_env("AUTODS_MODEL_KWARGS_JSON", model_kwargs) or {},
             extra_body=_optional_json_dict_env("AUTODS_EXTRA_BODY_JSON", extra_body),

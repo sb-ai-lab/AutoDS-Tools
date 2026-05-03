@@ -45,6 +45,7 @@ from .utility_functions import display_image as display_image_util
 logger = logging.getLogger(__name__)
 
 INSTALL_KEEPLEN = 500
+UV_BIN = os.environ.get("AUTODS_UV_BIN", "uv")
 
 # Keep track of active executor instances for cleanup on exit
 active_executors: list["JupyterExecutor"] = []
@@ -106,13 +107,23 @@ class JupyterExecutor:
         python_executable = str(python if python.exists() else Path(sys.executable))
         env = dict(self.env_vars)
 
-        install_result = subprocess.run(
-            [python_executable, "-m", "pip", "install", "ipykernel"],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
+        install_command = [UV_BIN, "pip", "install", "--python", python_executable, "ipykernel"]
+        try:
+            install_result = subprocess.run(
+                install_command,
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+        except FileNotFoundError:
+            install_result = subprocess.run(
+                [python_executable, "-m", "pip", "install", "ipykernel"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
         if install_result.returncode == 0:
             return
 
