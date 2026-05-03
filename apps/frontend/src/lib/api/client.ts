@@ -52,6 +52,13 @@ export interface DatasetEntry {
   name: string
 }
 
+export type InstallLogEvent =
+  | { type: 'command'; phase: string; elapsed_ms: number; command: string[] }
+  | { type: 'phase'; phase: string; elapsed_ms: number }
+  | { type: 'log'; phase: string; elapsed_ms: number; line: string }
+  | { type: 'error'; phase?: string; elapsed_ms?: number; message: string; exit_code?: number | null }
+  | { type: 'done'; status: string; installed?: string[]; elapsed_ms?: number; message?: string }
+
 export interface CliTokenRecord {
   id: string
   label?: string | null
@@ -252,6 +259,49 @@ export const apiClient = {
         body: JSON.stringify({ libraries }),
       }
     )
+  },
+
+  async installLibrariesStream(
+    sessionId: string,
+    libraries: string[],
+    onEvent: (event: InstallLogEvent) => void
+  ) {
+    await ensureBrowserBootstrap()
+
+    const response = await fetch(`${getApiBaseUrl()}/api/sessions/${sessionId}/install/stream`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ libraries }),
+    })
+
+    if (!response.ok || !response.body) {
+      throw new Error(await response.text() || `Request failed with status ${response.status}`)
+    }
+
+    const decoder = new TextDecoder()
+    const reader = response.body.getReader()
+    let buffer = ''
+    let errorMessage: string | null = null
+    const handleEvent = (event: InstallLogEvent) => {
+      if (event.type === 'error') errorMessage = event.message
+      onEvent(event)
+    }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line.trim()) handleEvent(JSON.parse(line) as InstallLogEvent)
+      }
+    }
+    buffer += decoder.decode()
+    if (buffer.trim()) handleEvent(JSON.parse(buffer) as InstallLogEvent)
+    if (errorMessage) {
+      throw new Error(errorMessage)
+    }
   },
 
   async getArtifacts(sessionId: string): Promise<ArtifactNode | null> {

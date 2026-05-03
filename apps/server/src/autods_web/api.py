@@ -10,11 +10,12 @@ import secrets
 import shutil
 import subprocess
 import threading
+import time
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, Protocol
+from typing import Any, AsyncIterator, Callable, Optional, Protocol
 
 from fastapi import (
     FastAPI,
@@ -107,6 +108,54 @@ def _uv_venv_create_command(venv_path: Path) -> list[str]:
 
 def _uv_pip_install_command(venv_path: Path, libraries: list[str]) -> list[str]:
     return [_UV_BIN, "pip", "install", "--python", str(_venv_python_path(venv_path)), *libraries]
+
+
+def _install_stream_event(event: dict[str, Any]) -> str:
+    return json.dumps(event) + "\n"
+
+
+async def _stream_command_output(command: list[str], phase: str) -> AsyncIterator[dict[str, Any]]:
+    started_at = time.monotonic()
+    yield {"type": "phase", "phase": phase, "elapsed_ms": 0}
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    assert process.stdout is not None
+    while True:
+        if time.monotonic() - started_at > _PIP_INSTALL_TIMEOUT_SEC:
+            process.kill()
+            await process.wait()
+            yield {
+                "type": "error",
+                "phase": phase,
+                "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                "message": f"Installation timed out after {_PIP_INSTALL_TIMEOUT_SEC} seconds",
+                "exit_code": None,
+            }
+            yield {"type": "command_done", "phase": phase, "exit_code": 124}
+            return
+        try:
+            raw_line = await asyncio.wait_for(process.stdout.readline(), timeout=0.2)
+        except TimeoutError:
+            if process.returncode is not None:
+                break
+            continue
+        if not raw_line:
+            if process.returncode is not None:
+                break
+            continue
+        line = raw_line.decode(errors="replace").rstrip("\r\n")
+        if line:
+            yield {
+                "type": "log",
+                "phase": phase,
+                "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                "line": line,
+            }
+    return_code = await process.wait()
+    yield {"type": "command_done", "phase": phase, "exit_code": return_code}
 
 
 def build_llm_client(options: dict[str, Any]) -> LLMClient:
@@ -1055,6 +1104,68 @@ def create_app(
             "installed": body.libraries,
             "output": result.stdout[-1000:] if result.stdout else "",
         }
+
+    @app.post("/api/sessions/{session_id}/install/stream")
+    async def install_libraries_stream(request: Request, session_id: str, body: InstallLibrariesRequest):
+        principal_id = _require_principal(request)
+        service = _session_service(principal_id)
+        session = _get_owned_session(principal_id, session_id)
+        workspace = _workspace_for(session)
+
+        async def _events() -> AsyncIterator[str]:
+            started_at = time.monotonic()
+            if not body.libraries:
+                yield _install_stream_event(
+                    {"type": "done", "status": "no_libraries", "message": "No libraries specified"}
+                )
+                return
+
+            venv_path = workspace / ".venv"
+            venv_python = _venv_python_path(venv_path)
+            commands = []
+            if not venv_python.exists():
+                commands.append(("venv_create", _uv_venv_create_command(venv_path)))
+            commands.append(("pip_install", _uv_pip_install_command(venv_path, body.libraries)))
+
+            for phase, command in commands:
+                yield _install_stream_event(
+                    {
+                        "type": "command",
+                        "phase": phase,
+                        "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                        "command": command,
+                    }
+                )
+                exit_code = 1
+                async for event in _stream_command_output(command, phase):
+                    if event["type"] == "command_done":
+                        exit_code = int(event["exit_code"])
+                    else:
+                        event["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+                        yield _install_stream_event(event)
+                if exit_code != 0:
+                    yield _install_stream_event(
+                        {
+                            "type": "error",
+                            "phase": phase,
+                            "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                            "message": f"{phase} failed with exit code {exit_code}",
+                            "exit_code": exit_code,
+                        }
+                    )
+                    return
+
+            await run_in_threadpool(service.update_folder_size, session.id, get_folder_size(workspace))
+            yield _install_stream_event(
+                {
+                    "type": "done",
+                    "status": "success",
+                    "installed": body.libraries,
+                    "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                }
+            )
+
+        return StreamingResponse(_events(), media_type="application/x-ndjson")
 
     def _artifacts_root(session: SessionMetadata) -> Path:
         return _workspace_for(session, create=False)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from base64 import urlsafe_b64encode
@@ -494,6 +495,70 @@ def test_install_libraries_returns_uv_stderr_on_failure(
 
     assert response.status_code == 500
     assert response.json() == {"detail": "uv pip install failed: compiler missing"}
+
+
+def test_install_libraries_streams_raw_uv_logs(
+    session_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _create_client(session_root)
+    _bootstrap(client)
+    session_id = client.post("/api/sessions").json()["id"]
+    commands: list[list[str]] = []
+
+    class FakeStdout:
+        def __init__(self, process: "FakeProcess", lines: list[bytes]) -> None:
+            self.process = process
+            self.lines = lines
+
+        async def readline(self) -> bytes:
+            if self.lines:
+                return self.lines.pop(0)
+            self.process.returncode = self.process.exit_code
+            return b""
+
+    class FakeProcess:
+        def __init__(self, lines: list[bytes], exit_code: int) -> None:
+            self.exit_code = exit_code
+            self.returncode: int | None = None
+            self.stdout = FakeStdout(self, lines)
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            if self.returncode is None:
+                self.returncode = self.exit_code
+            return self.returncode
+
+    async def fake_create_subprocess_exec(*command: str, **kwargs: Any) -> FakeProcess:
+        del kwargs
+        command_list = list(command)
+        commands.append(command_list)
+        if command_list[:2] == ["uv", "venv"]:
+            venv_path = Path(command_list[-1])
+            (venv_path / "bin").mkdir(parents=True, exist_ok=True)
+            (venv_path / "bin" / "python").touch()
+            return FakeProcess([b"created venv\n"], 0)
+        if command_list[:3] == ["uv", "pip", "install"]:
+            return FakeProcess([b"Resolved 10 packages\n", b"Installed pandas\n"], 0)
+        raise AssertionError(f"Unexpected command: {command_list}")
+
+    monkeypatch.setattr(api_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/install/stream",
+        json={"libraries": ["pandas"]},
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.splitlines()]
+    assert any(event["type"] == "log" and event["line"] == "created venv" for event in events)
+    assert any(event["type"] == "log" and event["line"] == "Resolved 10 packages" for event in events)
+    assert events[-1]["type"] == "done"
+    assert events[-1]["status"] == "success"
+    assert commands[0][:2] == ["uv", "venv"]
+    assert commands[1][:3] == ["uv", "pip", "install"]
 
 
 def test_transcript_persists_across_app_restart(session_root: Path) -> None:

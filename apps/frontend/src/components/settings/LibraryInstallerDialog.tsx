@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useUIStore } from '@/stores/useUIStore'
 import { useSessionStore } from '@/stores/useSessionStore'
-import { useInstallLibraries } from '@/hooks/useDatasets'
+import { apiClient, type InstallLogEvent } from '@/lib/api/client'
 
 const SUGGESTED_LIBRARIES = [
   { name: 'pandas', description: 'Data manipulation and analysis' },
@@ -34,12 +34,12 @@ const SUGGESTED_LIBRARIES = [
 export function LibraryInstallerDialog() {
   const { libraryInstallerOpen, closeLibraryInstaller } = useUIStore()
   const { currentSessionId } = useSessionStore()
-  const installLibraries = useInstallLibraries()
 
   const [libraries, setLibraries] = useState<string[]>([])
   const [inputValue, setInputValue] = useState('')
   const [status, setStatus] = useState<'idle' | 'installing' | 'success' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [logs, setLogs] = useState<string[]>([])
 
   const handleAddLibrary = (lib?: string) => {
     const libName = (lib || inputValue).trim().toLowerCase()
@@ -58,16 +58,32 @@ export function LibraryInstallerDialog() {
 
     setStatus('installing')
     setError(null)
+    setLogs([])
 
     try {
-      await installLibraries.mutateAsync({
-        sessionId: currentSessionId,
-        libraries,
+      await apiClient.installLibrariesStream(currentSessionId, libraries, (event: InstallLogEvent) => {
+        if (event.type === 'command') {
+          setLogs((current) => [
+            ...current,
+            `[${formatElapsed(event.elapsed_ms)}] ${event.command.join(' ')}`,
+          ])
+        } else if (event.type === 'log') {
+          setLogs((current) => [
+            ...current,
+            `[${formatElapsed(event.elapsed_ms)}] ${event.line}`,
+          ])
+        } else if (event.type === 'error') {
+          setLogs((current) => [
+            ...current,
+            `[${formatElapsed(event.elapsed_ms ?? 0)}] ${event.message}`,
+          ])
+        }
       })
       setStatus('success')
       setTimeout(() => {
         setLibraries([])
         setStatus('idle')
+        setLogs([])
       }, 2000)
     } catch {
       setStatus('error')
@@ -163,6 +179,14 @@ export function LibraryInstallerDialog() {
           </div>
         )}
 
+        {logs.length > 0 && (
+          <ScrollArea className="h-40 rounded-lg border border-border bg-background px-3 py-2">
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs text-text-muted">
+              {logs.join('\n')}
+            </pre>
+          </ScrollArea>
+        )}
+
         {status === 'success' && (
           <div className="flex items-center gap-2 text-sm text-status-success bg-status-success/10 rounded-lg px-3 py-2">
             <CheckCircle className="h-4 w-4" />
@@ -202,4 +226,8 @@ export function LibraryInstallerDialog() {
       </DialogContent>
     </Dialog>
   )
+}
+
+function formatElapsed(elapsedMs: number) {
+  return `${(elapsedMs / 1000).toFixed(1)}s`
 }
