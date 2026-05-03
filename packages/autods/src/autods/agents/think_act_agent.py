@@ -12,7 +12,6 @@ from autods.prompting.prompt_generator import PromptGenerator
 from autods.task_inference.base import TaskInference
 from autods.tools.toolkit import Toolkit
 from autods.utils.parse_tools import parse_tools_from_message
-from autods.utils.system_resources import get_system_info
 
 StateT = TypeVar("StateT", bound=BaseAgentState)
 ContextT = TypeVar("ContextT", bound=BaseThinkActAgent)
@@ -78,7 +77,6 @@ class Think(ThinkActAgent[StateT, ContextT]):
         session_time = f"{int(session_time_sec // 60)}m {int(session_time_sec % 60)}s"
         if isinstance(last_message, HumanMessage):
             turn_info = {
-                "system_info": get_system_info(),
                 "session_time": session_time,
                 "steps": f"{self._step_count}/{self.max_steps}",
             }

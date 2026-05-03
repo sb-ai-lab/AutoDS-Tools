@@ -25,7 +25,6 @@ dependencies = [
     "pygrad",
     "pyyaml>=6.0.2",
     "rich>=14.1.0",
-    "torch>=2.8.0",
 ]
 
 [build-system]

@@ -20,7 +20,6 @@ from autods.prompting.prompt_generator import (
 )
 from autods.task_inference import TaskInference
 from autods.utils.parse_tools import parse_tools_from_message
-from autods.utils.system_resources import get_system_info
 
 
 def _is_python_error(response_content: str) -> bool:
@@ -56,35 +55,6 @@ class Think(AutoDSTaskInference):
     def __init__(self, prompt_generation: AutoDSPromptGenerator):
         self.prompt_generator = prompt_generation
 
-    def add_extra_info(self, history: list, context: AutoDSContext):
-        if not history:
-            return
-        new_histoty = history.copy()
-        last_message = new_histoty[-1]
-        session_time_sec = time.perf_counter() - context.start_time
-        session_time = f"{int(session_time_sec // 60)}m {int(session_time_sec % 60)}s"
-        system_info = get_system_info()
-        if system_info.gpu.available:
-            gpu_info = f"GPU: {system_info.gpu.count} {system_info.gpu.names} ({'MPS' if system_info.gpu.type == 'mps' else 'NVIDIA'})\n"
-        else:
-            gpu_info = ""
-        avaliable_resurces = (
-            f"CPU: {system_info.cpu_count} cores\n"
-            f"{gpu_info}"
-            f"Memory: {system_info.memory.available} GB available\n"
-            f"OS: {system_info.os_system}\n"
-        )
-        avaliable_resurces_message = (
-            f"--- All resources are reserved for your task. Maximize their utilization. ---\n"
-            f"{avaliable_resurces}\n"
-            f"Session time: {session_time}\n"
-            f"--- End of resources usage info ---\n"
-            f"--- cpu_limit=os.cpu_count(), memory_limit=psutil.virtual_memory().available ---\n"
-        )
-        if isinstance(last_message, HumanMessage):
-            new_histoty[-1] = HumanMessage(content=str(last_message.content) + f"\n\n{avaliable_resurces_message}")
-        return new_histoty
-
     async def _runnable(self, state: AutoDSState, context: AutoDSContext) -> AutoDSState | Command[Any]:
         # Run initial messages prompt
         response = self.prompt_generator.get_next_initial_message_prompt()
@@ -95,9 +65,8 @@ class Think(AutoDSTaskInference):
             )
 
         history = state["messages"]
-        history_with_extra = self.add_extra_info(history, context)
 
-        prompt = self.prompt_generator.react_prompt(history_with_extra)
+        prompt = self.prompt_generator.react_prompt(history)
 
         try:
             response = await context.llm_client.ainvoke(prompt)
