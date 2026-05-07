@@ -1,14 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sqlite3
 import threading
-import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 
-from autods.auth import AuditLogEntry, AuthUser, CliTokenRecord, UserStatus
 from autods.sessions.domain import (
     CHECKPOINT_FILENAME,
     DATABASE_FILENAME,
@@ -94,45 +92,6 @@ class SessionStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_transcript_session_seq
                 ON transcript_messages (session_id, seq);
-
-                CREATE TABLE IF NOT EXISTS auth_users (
-                    id TEXT PRIMARY KEY,
-                    workos_user_id TEXT NOT NULL UNIQUE,
-                    email TEXT NOT NULL UNIQUE,
-                    display_name TEXT,
-                    status TEXT NOT NULL,
-                    is_admin INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    approved_at TEXT,
-                    approved_by TEXT
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_auth_users_email
-                ON auth_users (email);
-
-                CREATE TABLE IF NOT EXISTS cli_tokens (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    token_hash TEXT NOT NULL UNIQUE,
-                    label TEXT,
-                    created_at TEXT NOT NULL,
-                    last_used_at TEXT,
-                    expires_at TEXT,
-                    revoked_at TEXT
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_cli_tokens_user_id
-                ON cli_tokens (user_id);
-
-                CREATE TABLE IF NOT EXISTS audit_log (
-                    id TEXT PRIMARY KEY,
-                    actor_user_id TEXT,
-                    action TEXT NOT NULL,
-                    target_user_id TEXT,
-                    metadata_json TEXT,
-                    created_at TEXT NOT NULL
-                );
                 """
             )
             transcript_columns = {
@@ -145,49 +104,19 @@ class SessionStorage:
                     ADD COLUMN is_streaming INTEGER NOT NULL DEFAULT 0
                     """
                 )
-
-    def _row_to_auth_user(self, row: sqlite3.Row) -> AuthUser:
-        return AuthUser.model_validate(
-            {
-                **dict(row),
-                "is_admin": bool(row["is_admin"]),
-            }
-        )
-
-    def _row_to_cli_token(self, row: sqlite3.Row) -> CliTokenRecord:
-        return CliTokenRecord.model_validate(dict(row))
-
-    def _get_auth_user_row_by_workos_id(
-        self,
-        connection: sqlite3.Connection,
-        workos_user_id: str,
-    ) -> sqlite3.Row | None:
-        return connection.execute(
-            """
-            SELECT id, workos_user_id, email, display_name, status, is_admin,
-                   created_at, updated_at, approved_at, approved_by
-            FROM auth_users
-            WHERE workos_user_id = ?
-            LIMIT 1
-            """,
-            (workos_user_id,),
-        ).fetchone()
-
-    def _get_auth_user_row_by_email(
-        self,
-        connection: sqlite3.Connection,
-        email: str,
-    ) -> sqlite3.Row | None:
-        return connection.execute(
-            """
-            SELECT id, workos_user_id, email, display_name, status, is_admin,
-                   created_at, updated_at, approved_at, approved_by
-            FROM auth_users
-            WHERE email = ?
-            LIMIT 1
-            """,
-            (email,),
-        ).fetchone()
+            for column in (
+                "tool_call_id",
+                "tool_name",
+                "tool_args",
+                "tool_result",
+                "tool_status",
+                "tool_started_at",
+                "tool_completed_at",
+            ):
+                if column not in transcript_columns:
+                    connection.execute(f"ALTER TABLE transcript_messages ADD COLUMN {column} TEXT")
+            if "tool_duration_ms" not in transcript_columns:
+                connection.execute("ALTER TABLE transcript_messages ADD COLUMN tool_duration_ms INTEGER")
 
     def principal_path(self, principal_id: str, *, create: bool = True) -> Path:
         path = self.principals_root / validate_principal_id(principal_id)
@@ -312,8 +241,9 @@ class SessionStorage:
                 """
                 INSERT INTO transcript_messages (
                     session_id, role, content, timestamp, message_id, is_truncated,
-                    is_streaming
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    is_streaming, tool_call_id, tool_name, tool_args, tool_result, tool_status,
+                    tool_started_at, tool_completed_at, tool_duration_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -323,6 +253,14 @@ class SessionStorage:
                     message.message_id,
                     int(message.is_truncated),
                     int(message.is_streaming),
+                    message.tool_call_id,
+                    message.tool_name,
+                    json.dumps(message.tool_args, ensure_ascii=False) if message.tool_args is not None else None,
+                    message.tool_result,
+                    message.tool_status,
+                    message.tool_started_at.isoformat() if message.tool_started_at is not None else None,
+                    message.tool_completed_at.isoformat() if message.tool_completed_at is not None else None,
+                    message.tool_duration_ms,
                 ),
             )
         return message
@@ -350,8 +288,10 @@ class SessionStorage:
                     """
                     INSERT INTO transcript_messages (
                         session_id, role, content, timestamp, message_id,
-                        is_truncated, is_streaming
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        is_truncated, is_streaming, tool_call_id, tool_name, tool_args,
+                        tool_result, tool_status, tool_started_at, tool_completed_at,
+                        tool_duration_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         session_id,
@@ -361,6 +301,14 @@ class SessionStorage:
                         message.message_id,
                         int(message.is_truncated),
                         int(message.is_streaming),
+                        message.tool_call_id,
+                        message.tool_name,
+                        json.dumps(message.tool_args, ensure_ascii=False) if message.tool_args is not None else None,
+                        message.tool_result,
+                        message.tool_status,
+                        message.tool_started_at.isoformat() if message.tool_started_at is not None else None,
+                        message.tool_completed_at.isoformat() if message.tool_completed_at is not None else None,
+                        message.tool_duration_ms,
                     ),
                 )
             else:
@@ -368,7 +316,9 @@ class SessionStorage:
                     """
                     UPDATE transcript_messages
                     SET role = ?, content = ?, timestamp = ?, is_truncated = ?,
-                        is_streaming = ?
+                        is_streaming = ?, tool_call_id = ?, tool_name = ?, tool_args = ?,
+                        tool_result = ?, tool_status = ?, tool_started_at = ?,
+                        tool_completed_at = ?, tool_duration_ms = ?
                     WHERE seq = ?
                     """,
                     (
@@ -377,6 +327,14 @@ class SessionStorage:
                         message.timestamp.isoformat(),
                         int(message.is_truncated),
                         int(message.is_streaming),
+                        message.tool_call_id,
+                        message.tool_name,
+                        json.dumps(message.tool_args, ensure_ascii=False) if message.tool_args is not None else None,
+                        message.tool_result,
+                        message.tool_status,
+                        message.tool_started_at.isoformat() if message.tool_started_at is not None else None,
+                        message.tool_completed_at.isoformat() if message.tool_completed_at is not None else None,
+                        message.tool_duration_ms,
                         row["seq"],
                     ),
                 )
@@ -388,302 +346,24 @@ class SessionStorage:
             rows = connection.execute(
                 """
                 SELECT role, content, timestamp, message_id, is_truncated,
-                       is_streaming
+                       is_streaming, tool_call_id, tool_name, tool_args, tool_result,
+                       tool_status, tool_started_at, tool_completed_at, tool_duration_ms
                 FROM transcript_messages
                 WHERE session_id = ?
                 ORDER BY seq ASC
                 """,
                 (session_id,),
             ).fetchall()
-        return [
-            TranscriptMessage.model_validate(
-                {
-                    **dict(row),
-                    "is_truncated": bool(row["is_truncated"]),
-                    "is_streaming": bool(row["is_streaming"]),
-                }
-            )
-            for row in rows
-        ]
-
-    def upsert_auth_user(
-        self,
-        *,
-        workos_user_id: str,
-        email: str,
-        display_name: str | None = None,
-        bootstrap_admin_emails: set[str] | None = None,
-    ) -> AuthUser:
-        normalized_email = email.strip().lower()
-        bootstrap_admin = normalized_email in (bootstrap_admin_emails or set())
-        now = datetime.now(UTC)
-
-        with self._lock, self._connect() as connection:
-            workos_row = self._get_auth_user_row_by_workos_id(
-                connection,
-                workos_user_id,
-            )
-            email_row = self._get_auth_user_row_by_email(connection, normalized_email)
-
-            if workos_row is None and email_row is None:
-                user = AuthUser(
-                    id=uuid.uuid4().hex,
-                    workos_user_id=workos_user_id,
-                    email=normalized_email,
-                    display_name=display_name,
-                    status=UserStatus.APPROVED if bootstrap_admin else UserStatus.PENDING,
-                    is_admin=bootstrap_admin,
-                    approved_at=now if bootstrap_admin else None,
-                )
-                connection.execute(
-                    """
-                    INSERT INTO auth_users (
-                        id, workos_user_id, email, display_name, status, is_admin,
-                        created_at, updated_at, approved_at, approved_by
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        user.id,
-                        user.workos_user_id,
-                        user.email,
-                        user.display_name,
-                        user.status,
-                        int(user.is_admin),
-                        user.created_at.isoformat(),
-                        user.updated_at.isoformat(),
-                        user.approved_at.isoformat() if user.approved_at else None,
-                        user.approved_by,
-                    ),
-                )
-                return user
-
-            row = workos_row or email_row
-            assert row is not None
-            user = self._row_to_auth_user(row)
-
-            if workos_row is None and workos_user_id and user.workos_user_id != workos_user_id:
-                user.workos_user_id = workos_user_id
-
-            if email_row is None or email_row["id"] == user.id:
-                user.email = normalized_email
-
-            user.display_name = display_name
-            user.updated_at = now
-            if bootstrap_admin:
-                user.is_admin = True
-                user.status = UserStatus.APPROVED
-                user.approved_at = user.approved_at or now
-            connection.execute(
-                """
-                UPDATE auth_users
-                SET workos_user_id = ?, email = ?, display_name = ?, status = ?,
-                    is_admin = ?, updated_at = ?, approved_at = ?, approved_by = ?
-                WHERE id = ?
-                """,
-                (
-                    user.workos_user_id,
-                    user.email,
-                    user.display_name,
-                    user.status,
-                    int(user.is_admin),
-                    user.updated_at.isoformat(),
-                    user.approved_at.isoformat() if user.approved_at else None,
-                    user.approved_by,
-                    user.id,
-                ),
-            )
-            return user
-
-    def get_auth_user_by_id(self, user_id: str) -> AuthUser:
-        with self._lock, self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT id, workos_user_id, email, display_name, status, is_admin,
-                       created_at, updated_at, approved_at, approved_by
-                FROM auth_users
-                WHERE id = ?
-                """,
-                (user_id,),
-            ).fetchone()
-        if row is None:
-            raise SessionNotFoundError(user_id)
-        return self._row_to_auth_user(row)
-
-    def get_auth_user_by_workos_id(self, workos_user_id: str) -> AuthUser:
-        with self._lock, self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT id, workos_user_id, email, display_name, status, is_admin,
-                       created_at, updated_at, approved_at, approved_by
-                FROM auth_users
-                WHERE workos_user_id = ?
-                """,
-                (workos_user_id,),
-            ).fetchone()
-        if row is None:
-            raise SessionNotFoundError(workos_user_id)
-        return self._row_to_auth_user(row)
-
-    def list_auth_users(self) -> list[AuthUser]:
-        with self._lock, self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, workos_user_id, email, display_name, status, is_admin,
-                       created_at, updated_at, approved_at, approved_by
-                FROM auth_users
-                ORDER BY created_at ASC
-                """
-            ).fetchall()
-        return [self._row_to_auth_user(row) for row in rows]
-
-    def set_auth_user_status(
-        self,
-        user_id: str,
-        *,
-        status: UserStatus,
-        approved_by: str | None = None,
-    ) -> AuthUser:
-        user = self.get_auth_user_by_id(user_id)
-        user.status = status
-        user.updated_at = datetime.now(UTC)
-        if status == UserStatus.APPROVED:
-            user.approved_at = user.updated_at
-            user.approved_by = approved_by
-        connection_values = (
-            user.status,
-            user.updated_at.isoformat(),
-            user.approved_at.isoformat() if user.approved_at else None,
-            user.approved_by,
-            user.id,
-        )
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE auth_users
-                SET status = ?, updated_at = ?, approved_at = ?, approved_by = ?
-                WHERE id = ?
-                """,
-                connection_values,
-            )
-        return user
-
-    def create_cli_token(
-        self,
-        *,
-        user_id: str,
-        token_hash: str,
-        label: str | None = None,
-        expires_at: datetime | None = None,
-    ) -> CliTokenRecord:
-        token = CliTokenRecord(
-            id=uuid.uuid4().hex,
-            user_id=user_id,
-            token_hash=token_hash,
-            label=label,
-            expires_at=expires_at,
-        )
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO cli_tokens (
-                    id, user_id, token_hash, label, created_at, last_used_at,
-                    expires_at, revoked_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    token.id,
-                    token.user_id,
-                    token.token_hash,
-                    token.label,
-                    token.created_at.isoformat(),
-                    token.last_used_at.isoformat() if token.last_used_at else None,
-                    token.expires_at.isoformat() if token.expires_at else None,
-                    token.revoked_at.isoformat() if token.revoked_at else None,
-                ),
-            )
-        return token
-
-    def list_cli_tokens(self, user_id: str) -> list[CliTokenRecord]:
-        with self._lock, self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, user_id, token_hash, label, created_at, last_used_at,
-                       expires_at, revoked_at
-                FROM cli_tokens
-                WHERE user_id = ? AND revoked_at IS NULL
-                ORDER BY created_at DESC
-                """,
-                (user_id,),
-            ).fetchall()
-        return [self._row_to_cli_token(row) for row in rows]
-
-    def get_cli_token(self, token_hash: str) -> CliTokenRecord | None:
-        with self._lock, self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT id, user_id, token_hash, label, created_at, last_used_at,
-                       expires_at, revoked_at
-                FROM cli_tokens
-                WHERE token_hash = ? AND revoked_at IS NULL
-                """,
-                (token_hash,),
-            ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_cli_token(row)
-
-    def touch_cli_token(self, token_id: str) -> None:
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE cli_tokens
-                SET last_used_at = ?
-                WHERE id = ? AND revoked_at IS NULL
-                """,
-                (datetime.now(UTC).isoformat(), token_id),
-            )
-
-    def revoke_cli_token(self, user_id: str, token_id: str) -> None:
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE cli_tokens
-                SET revoked_at = ?
-                WHERE id = ? AND user_id = ? AND revoked_at IS NULL
-                """,
-                (datetime.now(UTC).isoformat(), token_id, user_id),
-            )
-
-    def append_audit_log(
-        self,
-        *,
-        action: str,
-        actor_user_id: str | None = None,
-        target_user_id: str | None = None,
-        metadata_json: str | None = None,
-    ) -> AuditLogEntry:
-        entry = AuditLogEntry(
-            id=uuid.uuid4().hex,
-            actor_user_id=actor_user_id,
-            action=action,
-            target_user_id=target_user_id,
-            metadata_json=metadata_json,
-        )
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO audit_log (
-                    id, actor_user_id, action, target_user_id, metadata_json,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    entry.id,
-                    entry.actor_user_id,
-                    entry.action,
-                    entry.target_user_id,
-                    entry.metadata_json,
-                    entry.created_at.isoformat(),
-                ),
-            )
-        return entry
+        messages: list[TranscriptMessage] = []
+        for row in rows:
+            values = dict(row)
+            raw_tool_args = values.get("tool_args")
+            if raw_tool_args is not None:
+                try:
+                    values["tool_args"] = json.loads(raw_tool_args)
+                except json.JSONDecodeError:
+                    values["tool_args"] = raw_tool_args
+            values["is_truncated"] = bool(row["is_truncated"])
+            values["is_streaming"] = bool(row["is_streaming"])
+            messages.append(TranscriptMessage.model_validate(values))
+        return messages

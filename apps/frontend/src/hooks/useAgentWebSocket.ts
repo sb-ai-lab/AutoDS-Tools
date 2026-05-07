@@ -5,11 +5,23 @@ import { apiClient, type TranscriptResponse } from '@/lib/api/client'
 import { useSessionStore, Message } from '@/stores/useSessionStore'
 
 interface WebSocketMessage {
-  type: 'token' | 'tool' | 'status' | 'environment'
-  data?: string
-  message_id?: string
+  type:
+    | 'run_started'
+    | 'assistant_text_delta'
+    | 'tool_call_started'
+    | 'tool_call_completed'
+    | 'run_completed'
+    | 'run_failed'
+    | 'run_cancelled'
+    | 'run_cancelling'
+  data?: string | { output_text?: string; is_truncated?: boolean } | Record<string, unknown> | null
+  message_id?: string | null
+  tool_call_id?: string | null
+  tool_name?: string | null
+  tool_started_at?: string | null
+  tool_completed_at?: string | null
+  tool_duration_ms?: number | null
   timestamp: string
-  truncated?: boolean
 }
 
 export function useAgentWebSocket(sessionId: string | null) {
@@ -29,6 +41,14 @@ export function useAgentWebSocket(sessionId: string | null) {
       timestamp: new Date(message.timestamp),
       isStreaming: message.isStreaming,
       isTruncated: message.isTruncated,
+      toolCallId: message.toolCallId,
+      toolName: message.toolName,
+      toolArgs: message.toolArgs,
+      toolResult: message.toolResult,
+      toolStatus: message.toolStatus,
+      toolStartedAt: message.toolStartedAt,
+      toolCompletedAt: message.toolCompletedAt,
+      toolDurationMs: message.toolDurationMs,
     }))
     const store = useSessionStore.getState()
     store.setMessages(messages)
@@ -89,7 +109,7 @@ export function useAgentWebSocket(sessionId: string | null) {
         const store = useSessionStore.getState()
 
         switch (msg.type) {
-          case 'token': {
+          case 'assistant_text_delta': {
             // Get fresh state to check last message (avoid stale closure)
             const currentMessages = store.messages
             const lastMsg = currentMessages[currentMessages.length - 1]
@@ -114,7 +134,7 @@ export function useAgentWebSocket(sessionId: string | null) {
               const newMessage: Message = {
                 id: incomingId,
                 role: 'assistant',
-                content: msg.data || '',
+                content: typeof msg.data === 'string' ? msg.data : '',
                 timestamp: new Date(msg.timestamp),
                 isStreaming: true,
               }
@@ -123,41 +143,116 @@ export function useAgentWebSocket(sessionId: string | null) {
               store.setStatus('streaming')
             } else {
               // Append to existing streaming message
-              store.appendToLastMessage(msg.data || '')
+              store.appendToLastMessage(typeof msg.data === 'string' ? msg.data : '')
             }
             break
           }
 
-          case 'environment': {
-            // Environment output (tool results, bash output, code execution results)
-            const envMessage: Message = {
-              id: `${msg.type}-${Date.now()}`,
-              role: 'environment',
-              content: msg.data || '',
+          case 'tool_call_started': {
+            const id = msg.tool_call_id || `tool-${Date.now()}`
+            const existing = store.messages.find(message => message.id === id)
+            const updates: Message = {
+              id,
+              role: 'tool',
+              content: msg.tool_name || 'tool',
               timestamp: new Date(msg.timestamp),
               isStreaming: false,
-              isTruncated: msg.truncated,
+              toolCallId: msg.tool_call_id || id,
+              toolName: msg.tool_name || 'tool',
+              toolArgs: msg.data,
+              toolResult: null,
+              toolStatus: 'running',
+              toolStartedAt: msg.tool_started_at || existing?.toolStartedAt || msg.timestamp,
+              toolCompletedAt: null,
+              toolDurationMs: null,
             }
-            store.addMessage(envMessage)
+            if (existing) {
+              store.updateMessage(id, updates)
+            } else {
+              store.addMessage(updates)
+            }
             break
           }
 
-          case 'status': {
-            const status = msg.data
-
-            if (status === 'completed' || status === 'done' || status === 'cancelled') {
-              store.updateLastMessage({ isStreaming: false })
-              store.setStreaming(false)
-              store.setStatus('idle')
-            } else if (status === 'cancelling') {
-              store.setStatus('cancelling')
-            } else if (status?.startsWith('Error:') || status?.startsWith('error')) {
-              store.updateLastMessage({ isStreaming: false })
-              store.setStreaming(false)
-              store.setStatus('error', status)
-            } else if (status === 'started' || status === 'running') {
-              store.setStatus('streaming')
+          case 'tool_call_completed': {
+            const payload = typeof msg.data === 'object' && msg.data !== null ? msg.data : {}
+            const id = msg.tool_call_id || `tool-${Date.now()}`
+            const outputText = typeof payload.output_text === 'string' ? payload.output_text : ''
+            const existing = store.messages.find(message => message.id === id)
+            const startedAt = msg.tool_started_at || existing?.toolStartedAt || null
+            const completedAt = msg.tool_completed_at || msg.timestamp
+            const fallbackDuration = startedAt
+              ? Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime())
+              : null
+            const toolStatus = 'tool_status' in payload && payload.tool_status === 'error' ? 'error' : 'completed'
+            const updates: Partial<Message> = {
+              content: msg.tool_name || existing?.toolName || 'tool',
+              timestamp: new Date(msg.timestamp),
+              isStreaming: false,
+              isTruncated: Boolean(payload.is_truncated),
+              toolCallId: msg.tool_call_id || id,
+              toolName: msg.tool_name || existing?.toolName || 'tool',
+              toolResult: outputText,
+              toolStatus,
+              toolStartedAt: startedAt,
+              toolCompletedAt: completedAt,
+              toolDurationMs: typeof msg.tool_duration_ms === 'number' ? msg.tool_duration_ms : fallbackDuration,
             }
+            if (existing) {
+              store.updateMessage(id, updates)
+            } else {
+              store.addMessage({
+                id,
+                role: 'tool',
+                ...updates,
+                content: updates.content || 'tool',
+                timestamp: updates.timestamp || new Date(msg.timestamp),
+              })
+            }
+            break
+          }
+
+          case 'run_started': {
+            store.setStatus('streaming')
+            store.setStreaming(true)
+            break
+          }
+
+          case 'run_completed': {
+            store.updateLastMessage({ isStreaming: false })
+            store.setStreaming(false)
+            store.setStatus('idle')
+            break
+          }
+
+          case 'run_cancelled': {
+            store.updateLastMessage({ isStreaming: false })
+            store.setStreaming(false)
+            store.setStatus('idle')
+            break
+          }
+
+          case 'run_cancelling': {
+            store.setStatus('cancelling')
+            break
+          }
+
+          case 'run_failed': {
+            const errorText = typeof msg.data === 'string' ? msg.data : 'Session ended in error'
+            const errorMessage: Message = {
+              id: `run-failed-${Date.now()}`,
+              role: 'tool',
+              content: 'run_failed',
+              timestamp: new Date(msg.timestamp),
+              isStreaming: false,
+              toolName: 'run_failed',
+              toolResult: errorText,
+              toolStatus: 'error',
+            }
+            store.addMessage(errorMessage)
+            store.updateLastMessage({ isStreaming: false })
+            store.setStreaming(false)
+            store.setStatus('error', errorText)
             break
           }
         }
