@@ -15,6 +15,7 @@ MODEL_FORMAT_MAX_LINES = 256
 MODEL_FORMAT_HEAD_LINES = MODEL_FORMAT_MAX_LINES // 2
 MODEL_FORMAT_TAIL_LINES = MODEL_FORMAT_MAX_LINES - MODEL_FORMAT_HEAD_LINES
 MODEL_FORMAT_HEAD_BYTES = MODEL_FORMAT_MAX_BYTES // 2
+TEXT_READ_MAX_BYTES = 2 * 1024 * 1024
 
 
 def _split_preserving_newlines(content: str) -> Iterable[str]:
@@ -73,6 +74,69 @@ def _format_python_output(message: str, image_count: int) -> str:
         parts.append(f"[image output omitted: {image_count} image{suffix}]")
     return "\n".join(parts).strip() or "Notebook cell executed with no output."
 
+
+def _workspace_root(project_path: Path) -> Path:
+    return project_path.expanduser().resolve()
+
+
+def _resolve_workspace_path(project_path: Path, user_path: str) -> Path:
+    if user_path.strip() == "":
+        raise ValueError("path must not be empty")
+
+    path = Path(user_path)
+    if path.is_absolute():
+        raise ValueError("absolute paths are not allowed")
+
+    root = _workspace_root(project_path)
+    resolved = (root / path).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("path must stay inside the project workspace") from exc
+    return resolved
+
+
+def _read_text_file(path: Path) -> str:
+    if not path.exists():
+        raise FileNotFoundError(f"file does not exist: {path}")
+    if not path.is_file():
+        raise IsADirectoryError(f"path is not a file: {path}")
+    if path.stat().st_size > TEXT_READ_MAX_BYTES:
+        raise ValueError(f"file is too large to read directly.: {path}")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _format_lines(content: str, offset: int | None, limit: int | None) -> str:
+    if offset is None and limit is None:
+        return _truncate_output(content)
+    if offset is not None and offset < 1:
+        raise ValueError("offset must be >= 1")
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be >= 1")
+
+    lines = content.splitlines(keepends=True)
+    start = 0 if offset is None else offset - 1
+    end = None if limit is None else start + limit
+    selected = "".join(lines[start:end])
+    selected_line_count = len(selected.splitlines())
+    last_line = start + selected_line_count if selected_line_count else start
+    header = f"Showing lines {start + 1}-{min(len(lines), last_line)} of {len(lines)}"
+    if not selected:
+        return f"{header}\n"
+    return _truncate_output(f"{header}\n\n{selected}")
+
+
+def create_read_tool(*, project_path: Path):
+    @tool("read")
+    def read(path: str, offset: int | None = None, limit: int | None = None) -> str:
+        """Read a UTF-8 text file inside the project workspace, optionally with 1-indexed line offset/limit."""
+        try:
+            resolved = _resolve_workspace_path(project_path, path)
+            return _format_lines(_read_text_file(resolved), offset, limit)
+        except Exception as e:
+            return str(e)
+
+    return read
 
 def create_run_shell_tool(
     *,
@@ -137,3 +201,16 @@ def create_submit_report_tool(
         return f"Saved report to {report_path}"
 
     return submit_report
+
+def create_submit_solution_tool(
+    *,
+    solution_path: Path,
+):
+    @tool("submit_solution")
+    def submit_solution(code: str) -> str:
+        """Submit the final Python code solution for this stage."""
+        solution_path.parent.mkdir(parents=True, exist_ok=True)
+        solution_path.write_text(code.strip(), encoding="utf-8")
+        return f"Saved code to {solution_path}"
+
+    return submit_solution

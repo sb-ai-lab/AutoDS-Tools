@@ -12,6 +12,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langfuse.langchain import CallbackHandler
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from autods.pipeline import build_pipeline
@@ -514,6 +515,7 @@ class AutoDS:
         local_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(local_loop)
         recorder = _TranscriptRecorder(service, session, prompt, on_event)
+        langfuse_handler = CallbackHandler()
 
         async def execute() -> None:
             try:
@@ -521,6 +523,7 @@ class AutoDS:
                 config: RunnableConfig = {
                     "recursion_limit": 200,
                     "configurable": {"thread_id": session.id},
+                    "callbacks":  [langfuse_handler]
                 }
                 stream_modes = ["values", "updates", "custom", "messages", "debug"]
                 project_path = service.workspace_path(session.id).resolve()

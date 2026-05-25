@@ -5,6 +5,7 @@ description = "Workspace root for the AutoDS monorepo"
 requires-python = ">=3.12"
 dependencies = [
     "autods-cli",
+    "langfuse>=4.6.1",
 ]
 
 [dependency-groups]
