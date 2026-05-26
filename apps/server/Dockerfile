@@ -28,7 +28,8 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     uv export --frozen --package autods-web --no-dev \
       --no-emit-package autods-web --no-emit-package autods --no-emit-package pygrad \
       --no-hashes --output-file /tmp/autods-server.requirements.txt \
-    && uv pip install --system -r /tmp/autods-server.requirements.txt
+    && uv pip install --system -r /tmp/autods-server.requirements.txt \
+    && python -c "from langchain.agents import AgentState, create_agent"
 
 COPY packages/pygrad/src /app/packages/pygrad/src
 COPY packages/autods/src /app/packages/autods/src

@@ -3,13 +3,13 @@
 import os
 from typing import Any
 
-import httpx
 from neo4j_graphrag.llm import LLMInterface
 from neo4j_graphrag.llm.types import LLMResponse
 from neo4j_graphrag.message_history import MessageHistory
 from neo4j_graphrag.types import LLMMessage
 
 from pygrad.common.log import get_logger
+from pygrad.graphrag.http_client import create_async_client, create_sync_client, post_json_with_retries
 
 logger = get_logger(__name__)
 
@@ -92,9 +92,13 @@ class CustomAPILLM(LLMInterface):
 
         _log_llm_request(self.endpoint, self.model, payload)
 
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(self.endpoint, json=payload, headers=headers)
-            response.raise_for_status()
+        with create_sync_client(timeout=self.timeout) as client:
+            response = post_json_with_retries(
+                client,
+                self.endpoint,
+                json=payload,
+                headers=headers,
+            )
             data = response.json()
 
         message = data["choices"][0]["message"]
@@ -136,7 +140,7 @@ class CustomAPILLM(LLMInterface):
 
         _log_llm_request(self.endpoint, self.model, payload)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with create_async_client(timeout=self.timeout) as client:
             response = await client.post(self.endpoint, json=payload, headers=headers)
 
             if response.status_code != 200:

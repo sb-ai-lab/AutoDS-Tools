@@ -65,17 +65,19 @@ export function LibraryInstallerDialog() {
         if (event.type === 'command') {
           setLogs((current) => [
             ...current,
-            `[${formatElapsed(event.elapsed_ms)}] ${event.command.join(' ')}`,
+            `[${formatElapsed(event.elapsed_ms ?? 0)}] ${event.command.join(' ')}`,
           ])
         } else if (event.type === 'log') {
           setLogs((current) => [
             ...current,
-            `[${formatElapsed(event.elapsed_ms)}] ${event.line}`,
+            `[${formatElapsed(event.elapsed_ms ?? 0)}] ${event.line}`,
           ])
         } else if (event.type === 'error') {
+          const message =
+            event.message ?? `Installation failed (exit code ${event.exit_code ?? 'unknown'})`
           setLogs((current) => [
             ...current,
-            `[${formatElapsed(event.elapsed_ms ?? 0)}] ${event.message}`,
+            `[${formatElapsed(event.elapsed_ms ?? 0)}] ${message}`,
           ])
         }
       })
@@ -85,9 +87,9 @@ export function LibraryInstallerDialog() {
         setStatus('idle')
         setLogs([])
       }, 2000)
-    } catch {
+    } catch (err) {
       setStatus('error')
-      setError('Failed to install libraries. Please try again.')
+      setError(err instanceof Error ? err.message : 'Failed to install libraries. Please try again.')
     }
   }
 

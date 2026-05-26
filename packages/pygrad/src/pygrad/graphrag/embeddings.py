@@ -4,12 +4,12 @@ import contextlib
 import os
 from typing import Any, cast
 
-import httpx
 from neo4j import Driver
 from neo4j_graphrag.embeddings import Embedder
 from tqdm import trange
 
 from pygrad.graphrag.common import NODE_LABELS
+from pygrad.graphrag.http_client import create_sync_client, post_json_with_retries
 
 _DEFAULT_EMBEDDING_DIMENSIONS = 768
 
@@ -78,9 +78,13 @@ class CustomEmbedder(Embedder):
         }
         payload.update(kwargs)
 
-        with httpx.Client(timeout=60.0) as client:
-            response = client.post(self.endpoint, json=payload, headers=headers)
-            response.raise_for_status()
+        with create_sync_client(timeout=60.0) as client:
+            response = post_json_with_retries(
+                client,
+                self.endpoint,
+                json=payload,
+                headers=headers,
+            )
 
             # Check if response is empty
             if not response.content:

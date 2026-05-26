@@ -1,4 +1,10 @@
-{$PUBLIC_HOST} {
+{
+	# Private / lab hostnames are not eligible for public CA certs (Let's Encrypt).
+	# Serve HTTP only on :80 (mapped to host :8000 in docker-compose).
+	auto_https off
+}
+
+:80 {
 	encode gzip zstd
 
 	basic_auth {

@@ -229,6 +229,7 @@ autods_v
 generate_pyboost_wiki.py
 pyboost_wiki
 data
+docker/data/
 autods/tracing.yaml
 test*.ipynb
 

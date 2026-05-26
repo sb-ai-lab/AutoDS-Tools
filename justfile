@@ -1,5 +1,4 @@
 python-src := "apps/server/src apps/cli/src"
-python-tests := "apps/server/tests apps/cli/tests"
 frontend-dir := "apps/frontend"
 cognee-compose-file := "docker/docker-compose-cognee.yml"
 docker-compose-file := "docker/docker-compose.yml"
@@ -7,23 +6,23 @@ docker-env-file := "docker/.env"
 
 # Run ruff linter
 lint:
-    uv run ruff check {{python-src}} {{python-tests}}
+    uv run ruff check {{python-src}}
 
 # Run ruff formatter (check only)
 fmt-check:
-    uv run ruff format --check {{python-src}} {{python-tests}}
+    uv run ruff format --check {{python-src}}
 
 # Run ruff formatter (write changes)
 fmt:
-    uv run ruff format {{python-src}} {{python-tests}}
+    uv run ruff format {{python-src}}
 
 # Auto-fix lint issues
 lint-fix:
-    uv run ruff check --fix {{python-src}} {{python-tests}}
+    uv run ruff check --fix {{python-src}}
 
 # Run ty type checker
 ty:
-    uv run ty check {{python-src}} {{python-tests}}
+    uv run ty check {{python-src}}
 
 # Sync the Python workspace
 install:
@@ -125,4 +124,4 @@ docker-logs *FLAGS:
     docker compose --env-file {{docker-env-file}} -f {{docker-compose-file}} logs -f {{FLAGS}}
 
 cloc:
-    cloc {{python-src}} {{python-tests}} {{frontend-dir}} --exclude-dir=node_modules,.git,__pycache__,.next,.venv,.ruff_cache,.pytest_cache,.mypy_cache,.ty_cache,dist,build,htmlcov,.turbo,coverage,package.json,package-lock.json,tsconfig.json
+    cloc {{python-src}} {{frontend-dir}} --exclude-dir=node_modules,.git,__pycache__,.next,.venv,.ruff_cache,.pytest_cache,.mypy_cache,.ty_cache,dist,build,htmlcov,.turbo,coverage,package.json,package-lock.json,tsconfig.json

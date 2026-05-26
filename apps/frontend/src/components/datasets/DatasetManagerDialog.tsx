@@ -132,35 +132,51 @@ export function DatasetManagerDialog() {
               </div>
             ) : datasets && datasets.length > 0 ? (
               <div className="p-2 space-y-1">
-                {datasets.map((dataset) => (
-                  <div
-                    key={dataset.id}
-                    className="flex items-center justify-between p-3 rounded-lg hover:bg-surface-hover transition-colors group"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="h-8 w-8 rounded bg-accent/10 flex items-center justify-center">
-                        <Link className="h-4 w-4 text-accent" />
-                      </div>
-                      <div>
-                        <p className="font-medium text-text-primary">{dataset.name}</p>
-                        <p className="text-2xs text-text-muted font-mono">{dataset.id}</p>
-                      </div>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => handleDeleteDataset(dataset.name)}
-                      disabled={deleteDataset.isPending}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity text-status-error hover:text-status-error hover:bg-status-error/10"
+                {datasets.map((dataset) => {
+                  const isIndexing = dataset.status === 'queued' || dataset.status === 'running'
+                  const didFail = dataset.status === 'failed'
+
+                  return (
+                    <div
+                      key={dataset.id}
+                      className="flex items-center justify-between p-3 rounded-lg hover:bg-surface-hover transition-colors group"
                     >
-                      {deleteDataset.isPending ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </div>
-                ))}
+                      <div className="flex items-center gap-3">
+                        <div className="h-8 w-8 rounded bg-accent/10 flex items-center justify-center">
+                          {isIndexing ? (
+                            <Loader2 className="h-4 w-4 text-accent animate-spin" />
+                          ) : (
+                            <Link className="h-4 w-4 text-accent" />
+                          )}
+                        </div>
+                        <div>
+                          <p className="font-medium text-text-primary">{dataset.name}</p>
+                          <p className="text-2xs text-text-muted font-mono">{dataset.id}</p>
+                          {dataset.status && dataset.status !== 'completed' && (
+                            <p className={cn('text-2xs', didFail ? 'text-status-error' : 'text-accent')}>
+                              {didFail
+                                ? dataset.error || 'Indexing failed'
+                                : `Indexing ${dataset.status}...`}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => handleDeleteDataset(dataset.name)}
+                        disabled={deleteDataset.isPending || isIndexing}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity text-status-error hover:text-status-error hover:bg-status-error/10"
+                      >
+                        {deleteDataset.isPending ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </div>
+                  )
+                })}
               </div>
             ) : (
               <div className="h-full flex flex-col items-center justify-center text-text-muted p-8">

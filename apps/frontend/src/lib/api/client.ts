@@ -42,13 +42,15 @@ export interface ArtifactNode {
 export interface DatasetEntry {
   id: string
   name: string
+  status?: 'queued' | 'running' | 'completed' | 'failed'
+  error?: string
 }
 
 export type InstallLogEvent =
   | { type: 'command'; phase: string; elapsed_ms: number; command: string[] }
   | { type: 'phase'; phase: string; elapsed_ms: number }
   | { type: 'log'; phase: string; elapsed_ms: number; line: string }
-  | { type: 'error'; phase?: string; elapsed_ms?: number; message: string; exit_code?: number | null }
+  | { type: 'error'; phase?: string; elapsed_ms?: number; message?: string; exit_code?: number | null }
   | { type: 'done'; status: string; installed?: string[]; elapsed_ms?: number; message?: string }
 
 interface ArtifactResponse {
@@ -212,7 +214,10 @@ export const apiClient = {
     let buffer = ''
     let errorMessage: string | null = null
     const handleEvent = (event: InstallLogEvent) => {
-      if (event.type === 'error') errorMessage = event.message
+      if (event.type === 'error') {
+        errorMessage =
+          event.message ?? `Installation failed (exit code ${event.exit_code ?? 'unknown'})`
+      }
       onEvent(event)
     }
     while (true) {

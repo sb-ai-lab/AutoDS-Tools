@@ -32,7 +32,6 @@ just cognee-down
 
 The production-style stack expects a real `docker/.env` file. Important values include:
 
-- `PUBLIC_HOST`
 - `BASIC_AUTH_USERNAME`
 - `BASIC_AUTH_PASSWORD_HASH`
 - `NEXT_PUBLIC_API_URL`

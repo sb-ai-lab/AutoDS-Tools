@@ -12,7 +12,7 @@ import time
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 
 from fastapi import (
     FastAPI,
@@ -25,7 +25,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.middleware.cors import CORSMiddleware
 
@@ -42,6 +42,7 @@ from autods.sessions import (
 )
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 COOKIE_PRINCIPAL_NAME = "autods_pid"
 HEADER_PRINCIPAL_NAME = "X-AutoDS-Principal"
@@ -50,6 +51,7 @@ ARTIFACT_TREE_MAX_ITEMS = int(os.environ.get("ARTIFACT_TREE_MAX_ITEMS", "10000")
 _PIP_INSTALL_TIMEOUT_SEC = max(1, int(os.environ.get("AUTODS_PIP_INSTALL_TIMEOUT_SEC", "3600")))
 _PIP_INSTALL_STDERR_TAIL = int(os.environ.get("AUTODS_PIP_INSTALL_STDERR_TAIL", "12000"))
 _UV_BIN = os.environ.get("AUTODS_UV_BIN", "uv")
+_PIP_EXTRA_INDEX_URL = os.environ.get("AUTODS_PIP_EXTRA_INDEX_URL", "").strip()
 ALLOWED_UPLOAD_EXTENSIONS = {
     ".csv",
     ".tsv",
@@ -75,8 +77,20 @@ def _uv_venv_create_command(venv_path: Path) -> list[str]:
     return [_UV_BIN, "venv", "--seed", "--allow-existing", str(venv_path)]
 
 
+def _pip_install_env() -> dict[str, str]:
+    env = os.environ.copy()
+    uv_cache_dir = env.get("UV_CACHE_DIR", "").strip()
+    if uv_cache_dir:
+        env["UV_CACHE_DIR"] = uv_cache_dir
+    return env
+
+
 def _uv_pip_install_command(venv_path: Path, libraries: list[str]) -> list[str]:
-    return [_UV_BIN, "pip", "install", "--python", str(_venv_python_path(venv_path)), *libraries]
+    command = [_UV_BIN, "pip", "install", "--python", str(_venv_python_path(venv_path))]
+    if _PIP_EXTRA_INDEX_URL:
+        command.extend(["--extra-index-url", _PIP_EXTRA_INDEX_URL])
+    command.extend(libraries)
+    return command
 
 
 def _install_stream_event(event: dict[str, Any]) -> str:
@@ -89,6 +103,7 @@ async def _stream_command_output(command: list[str], phase: str) -> AsyncIterato
         *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        env=_pip_install_env(),
     )
     assert process.stdout is not None
     while True:
@@ -112,6 +127,34 @@ async def _stream_command_output(command: list[str], phase: str) -> AsyncIterato
         if line:
             yield {"type": "log", "phase": phase, "line": line}
     yield {"type": "command_done", "phase": phase, "exit_code": await process.wait()}
+
+
+def _run_async_coro_in_isolated_loop(coro_factory: Callable[[], Awaitable[_T]]) -> _T:
+    """Run a coroutine on a dedicated loop with explicit async cleanup."""
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro_factory())
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            if hasattr(loop, "shutdown_default_executor"):
+                loop.run_until_complete(loop.shutdown_default_executor())
+        except Exception:
+            logger.debug("Failed to shut down pygrad worker event loop cleanly", exc_info=True)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+
+
+async def _run_pygrad_in_thread(coro_factory: Callable[[], Awaitable[_T]]) -> _T:
+    """Run pygrad coroutines away from the FastAPI event loop.
+
+    Some pygrad async functions currently perform synchronous network and Neo4j
+    work internally. Running them in a worker thread keeps API health checks and
+    other requests responsive while repository indexing is active.
+    """
+    return await run_in_threadpool(lambda: _run_async_coro_in_isolated_loop(coro_factory))
 
 
 class BootstrapResponse(BaseModel):
@@ -257,6 +300,9 @@ def create_app(
 ) -> FastAPI:
     manager = WebSocketManager()
     autods = autods or AutoDS()
+    dataset_index_tasks: dict[str, asyncio.Task[None]] = {}
+    dataset_index_states: dict[str, dict[str, str]] = {}
+    dataset_index_lock = asyncio.Lock()
     app = FastAPI(
         title="AutoDS API",
         version="0.1.0",
@@ -286,6 +332,29 @@ def create_app(
                     detail="Invalid principal identity",
                 ) from exc
         raise HTTPException(status_code=401, detail="Missing principal identity")
+
+    def _dataset_payload(repo_id: str, status: str, error: str | None = None) -> dict[str, str]:
+        payload = {"id": repo_id, "name": repo_id, "status": status}
+        if error:
+            payload["error"] = error
+        return payload
+
+    async def _index_dataset_in_background(repo_id: str, url: str) -> None:
+        async with dataset_index_lock:
+            dataset_index_states[repo_id] = _dataset_payload(repo_id, "running")
+
+        try:
+            await _run_pygrad_in_thread(lambda: pg.add(url))
+        except Exception as exc:
+            logger.exception("Failed to index dataset %s", repo_id)
+            async with dataset_index_lock:
+                dataset_index_states[repo_id] = _dataset_payload(repo_id, "failed", str(exc))
+        else:
+            async with dataset_index_lock:
+                dataset_index_states[repo_id] = _dataset_payload(repo_id, "completed")
+        finally:
+            async with dataset_index_lock:
+                dataset_index_tasks.pop(repo_id, None)
 
     def _get_owned_session(principal_id: str, session_id: str) -> SessionMetadata:
         try:
@@ -438,13 +507,20 @@ def create_app(
         venv_python = _venv_python_path(venv_path)
 
         def _install() -> subprocess.CompletedProcess[str]:
+            install_env = _pip_install_env()
             if not venv_python.exists():
-                subprocess.run(_uv_venv_create_command(venv_path), check=True, capture_output=True)
+                subprocess.run(
+                    _uv_venv_create_command(venv_path),
+                    check=True,
+                    capture_output=True,
+                    env=install_env,
+                )
             return subprocess.run(
                 _uv_pip_install_command(venv_path, body.libraries),
                 capture_output=True,
                 text=True,
                 timeout=_PIP_INSTALL_TIMEOUT_SEC,
+                env=install_env,
             )
 
         try:
@@ -479,17 +555,34 @@ def create_app(
             if not _venv_python_path(venv_path).exists():
                 commands.append(("venv_create", _uv_venv_create_command(venv_path)))
             commands.append(("pip_install", _uv_pip_install_command(venv_path, body.libraries)))
+            last_error_line = ""
             for phase, command in commands:
-                yield _install_stream_event({"type": "command", "phase": phase, "command": command})
+                elapsed_ms = int((time.monotonic() - started_at) * 1000)
+                yield _install_stream_event(
+                    {"type": "command", "phase": phase, "command": command, "elapsed_ms": elapsed_ms}
+                )
                 exit_code = 1
                 async for event in _stream_command_output(command, phase):
                     if event["type"] == "command_done":
                         exit_code = int(event["exit_code"])
                     else:
                         event["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+                        if event["type"] == "log" and (
+                            "error" in event["line"].lower() or "failed" in event["line"].lower()
+                        ):
+                            last_error_line = event["line"]
                         yield _install_stream_event(event)
                 if exit_code != 0:
-                    yield _install_stream_event({"type": "error", "phase": phase, "exit_code": exit_code})
+                    message = last_error_line or f"{phase} failed with exit code {exit_code}"
+                    yield _install_stream_event(
+                        {
+                            "type": "error",
+                            "phase": phase,
+                            "exit_code": exit_code,
+                            "message": message,
+                            "elapsed_ms": int((time.monotonic() - started_at) * 1000),
+                        }
+                    )
                     return
             await run_in_threadpool(autods.refresh_folder_size, principal_id, session.id)
             yield _install_stream_event(
@@ -589,18 +682,39 @@ def create_app(
     @app.get("/api/datasets")
     async def list_datasets(request: Request):
         _require_principal(request)
-        return [{"id": item.name, "name": item.name} for item in (await pg.list() or [])]
+        indexed = {
+            item.name: _dataset_payload(item.name, "completed") for item in (await _run_pygrad_in_thread(pg.list) or [])
+        }
+        async with dataset_index_lock:
+            for repo_id, state in dataset_index_states.items():
+                if repo_id not in indexed or state["status"] != "completed":
+                    indexed[repo_id] = state
+        return list(indexed.values())
 
-    @app.post("/api/datasets", status_code=201)
+    @app.post("/api/datasets", status_code=202)
     async def add_dataset(request: Request, body: AddDatasetRequest):
         _require_principal(request)
+        repo_id = pg.get_repository_id(body.url)
         try:
-            await pg.add(body.url)
-            repo_id = pg.get_repository_id(body.url)
-            dataset = await pg.get_dataset(repo_id)
-            if dataset is None:
-                raise HTTPException(status_code=500, detail="Dataset was not found after indexing")
-            return {"id": dataset.name, "name": dataset.name}
+            dataset = await _run_pygrad_in_thread(lambda: pg.get_dataset(repo_id))
+            if dataset is not None:
+                return JSONResponse(
+                    status_code=200,
+                    content=_dataset_payload(dataset.name, "completed"),
+                )
+
+            async with dataset_index_lock:
+                task = dataset_index_tasks.get(repo_id)
+                if task is not None and not task.done():
+                    return JSONResponse(
+                        status_code=202,
+                        content=dataset_index_states.get(repo_id, _dataset_payload(repo_id, "queued")),
+                    )
+
+                dataset_index_states[repo_id] = _dataset_payload(repo_id, "queued")
+                dataset_index_tasks[repo_id] = asyncio.create_task(_index_dataset_in_background(repo_id, body.url))
+
+            return JSONResponse(status_code=202, content=_dataset_payload(repo_id, "queued"))
         except HTTPException:
             raise
         except Exception as exc:
@@ -609,7 +723,9 @@ def create_app(
     @app.delete("/api/datasets/{name}", status_code=204)
     async def delete_dataset(request: Request, name: str):
         _require_principal(request)
-        await pg.delete(name)
+        async with dataset_index_lock:
+            dataset_index_states.pop(name, None)
+        await _run_pygrad_in_thread(lambda: pg.delete(name))
 
     @app.websocket("/api/ws/{session_id}")
     async def websocket_endpoint(websocket: WebSocket, session_id: str):

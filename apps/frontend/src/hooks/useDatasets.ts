@@ -10,7 +10,7 @@ export function useDatasets(enabled: boolean = true) {
     enabled,
     staleTime: 60000, // Consider fresh for 1 minute
     refetchOnWindowFocus: false, // Don't refetch on window focus
-    refetchInterval: false, // Don't auto-poll
+    refetchInterval: 5000,
     retry: 2,
   })
 }
