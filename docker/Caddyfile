@@ -1,0 +1,18 @@
+{
+	# Private / lab hostnames are not eligible for public CA certs (Let's Encrypt).
+	# Serve HTTP only on :80 (mapped to host :8000 in docker-compose).
+	auto_https off
+}
+
+:80 {
+	encode gzip zstd
+
+	basic_auth {
+		{$BASIC_AUTH_USERNAME} {$BASIC_AUTH_PASSWORD_HASH}
+	}
+
+	@backend path /api/* /health
+	reverse_proxy @backend autods-server:8000
+
+	reverse_proxy autods-frontend:3000
+}

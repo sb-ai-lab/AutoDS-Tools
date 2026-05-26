@@ -14,6 +14,7 @@ dist/
 downloads/
 eggs/
 .eggs/
+lib/
 lib64/
 parts/
 sdist/
@@ -191,6 +192,9 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# ty type checker:
+.ty_cache/
+
 # PyPI configuration file
 .pypirc
 
@@ -218,29 +222,9 @@ __marimo__/
 
 # uv
 uv.lock
+# Docker
+docker-compose.override.yml
+.env.local
 
-# Project-specific files
-autods_config.yaml
-autods_v1
-
-/tasks/lightAutoML_tabular/Titanic/
-
-autods_v
-generate_pyboost_wiki.py
-pyboost_wiki
-data
-docker/data/
-autods/tracing.yaml
-test*.ipynb
-
-
-# MLE-bench
-cache
-mle-bench
-
-# Temp files
-.temp/
-autods_v/*
-
-.npm-cache/
-.agents/
+#Temp files
+.temp
