@@ -483,7 +483,7 @@ def build_pipeline(project_path: str, *, checkpointer: None | bool | BaseCheckpo
         ],
     )
     
-    solution_path = resolved_path / AUTODS_PROJECT_HOME / "solution.py"
+    solution_path = resolved_path / "solution.py"
 
     coder_agent = create_agent(
         model=lm_client,
